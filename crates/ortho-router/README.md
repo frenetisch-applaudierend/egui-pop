@@ -94,10 +94,17 @@ centred on the line and within the margin, ordered so the spreading
 adds as few crossings as it can. A segment moves as a whole, so the
 route stays orthogonal; the segments at the ports stay where they are.
 
-When no route exists (a port boxed in, a stub end inside another
-obstacle), the router does not fail: it returns the fallback, a stub out
-of each port joined by one elbow halfway, with `Route::routed` set to
-`false`, so the caller can draw it differently.
+Nodes closer than twice the margin leave no room between them: a port's
+stub would end inside the next node's margin. A connector with no route
+is then tried again with half the margin, up to three times (down to an
+eighth), so it runs closer to the nodes only where it has to. Spreading
+wires that share a channel stays within the margin their routes were
+found with.
+
+When no route exists even then (a port boxed in, a stub end inside
+another obstacle), the router does not fail: it returns the fallback, a
+stub out of each port joined by one elbow halfway, with `Route::routed`
+set to `false`, so the caller can draw it differently.
 
 ## What it does not do (yet)
 

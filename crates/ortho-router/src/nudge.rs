@@ -39,8 +39,10 @@ struct Seg {
     key: (f32, f32),
 }
 
-/// Spreads overlapping collinear segments of `routes` apart.
-pub(crate) fn nudge(routes: &mut [Route], spacing: f32, margin: f32) {
+/// Spreads overlapping collinear segments of `routes` apart. `margins`
+/// holds the margin each route was found with: a group spreads over the
+/// smallest of its routes'.
+pub(crate) fn nudge(routes: &mut [Route], spacing: f32, margins: &[f32]) {
     if spacing <= 0.0 || !spacing.is_finite() {
         return;
     }
@@ -89,6 +91,10 @@ pub(crate) fn nudge(routes: &mut [Route], spacing: f32, margin: f32) {
                 .then(a.route.cmp(&b.route))
         });
         let n = group.len() as f32;
+        let margin = group
+            .iter()
+            .map(|s| margins[s.route])
+            .fold(f32::INFINITY, f32::min);
         let step = spacing.min(margin.max(0.0) / (n - 1.0));
         for (m, s) in group.iter().enumerate() {
             let off = (m as f32 - (n - 1.0) / 2.0) * step;
@@ -166,7 +172,7 @@ mod tests {
             route(&[[0.0, 0.0], [50.0, 0.0], [50.0, 100.0], [100.0, 100.0]]),
             route(&[[0.0, 20.0], [50.0, 20.0], [50.0, 120.0], [100.0, 120.0]]),
         ];
-        nudge(&mut routes, 6.0, 12.0);
+        nudge(&mut routes, 6.0, &[12.0; 2]);
         let x0 = routes[0].points[1].x;
         let x1 = routes[1].points[1].x;
         // The second turns in lower at the top and out lower at the
@@ -187,7 +193,7 @@ mod tests {
                 route(&[[0.0, y], [50.0, y], [50.0, y + 100.0], [100.0, y + 100.0]])
             })
             .collect();
-        nudge(&mut routes, 6.0, 8.0);
+        nudge(&mut routes, 6.0, &[8.0; 5]);
         let xs: Vec<f32> = routes.iter().map(|r| r.points[1].x).collect();
         let (lo, hi) = xs
             .iter()
@@ -202,7 +208,7 @@ mod tests {
             route(&[[0.0, 60.0], [50.0, 60.0], [50.0, 100.0], [100.0, 100.0]]),
         ];
         let before = routes.clone();
-        nudge(&mut routes, 6.0, 12.0);
+        nudge(&mut routes, 6.0, &[12.0; 2]);
         assert_eq!(routes, before);
     }
 
@@ -213,7 +219,7 @@ mod tests {
             route(&[[0.0, 0.0], [100.0, 0.0]]),
         ];
         let before = routes.clone();
-        nudge(&mut routes, 6.0, 12.0);
+        nudge(&mut routes, 6.0, &[12.0; 2]);
         assert_eq!(routes, before);
     }
 }

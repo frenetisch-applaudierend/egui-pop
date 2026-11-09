@@ -172,6 +172,69 @@ fn a_boxed_in_port_falls_back_to_one_elbow() {
     assert_eq!(route.points[1].x, 250.0);
 }
 
+/// Four nodes in a row with `gap` between them.
+fn row(gap: f32) -> Vec<Rect> {
+    (0..4)
+        .map(|i| rect(i as f32 * (100.0 + gap), 0.0, 100.0, 60.0))
+        .collect()
+}
+
+#[test]
+fn a_gap_narrower_than_twice_the_margin_still_has_a_route() {
+    // The default margin is 12, so each port's stub would end inside the
+    // next node's margin: the route is found with a smaller one.
+    for gap in [6.0, 18.0] {
+        let nodes = row(gap);
+        let wire = Connector::new(right(100.0, 30.0), left(3.0 * (100.0 + gap), 30.0));
+        let route = router(&nodes).route(&wire);
+        assert!(route.routed, "gap {gap}: {:?}", route.points);
+        assert_orthogonal(&route);
+        assert_clear(&route, &nodes);
+        assert_eq!(route.points.first(), Some(&wire.from.at));
+        assert_eq!(route.points.last(), Some(&wire.to.at));
+        // Out into the gap, over the two nodes between, into the last gap.
+        assert!(route.points[1].x > 100.0 && route.points[1].x < 100.0 + gap);
+        assert_eq!(route.bends(), 4, "gap {gap}: {:?}", route.points);
+    }
+}
+
+#[test]
+fn a_roomy_row_keeps_the_full_margin() {
+    let nodes = row(60.0);
+    let wire = Connector::new(right(100.0, 30.0), left(3.0 * 160.0, 30.0));
+    let route = router(&nodes).route(&wire);
+    assert!(route.routed);
+    // The way past the nodes runs one margin from them (above or below), not less.
+    assert!(
+        route.points.iter().any(|p| p.y == -12.0 || p.y == 72.0),
+        "{:?}",
+        route.points
+    );
+}
+
+#[test]
+fn wires_spread_in_a_tight_gap_stay_out_of_the_nodes() {
+    // Three wires leave the first node near its top into the same 6 wide
+    // gap and climb it together; spreading them over the full margin
+    // would push them into the nodes.
+    let nodes = row(6.0);
+    let wires = [
+        Connector::new(right(100.0, 10.0), left(2.0 * 106.0, 10.0)),
+        Connector::new(right(100.0, 10.0), left(3.0 * 106.0, 10.0)),
+        Connector::new(right(100.0, 10.0), left(3.0 * 106.0, 15.0)),
+    ];
+    let routes = router(&nodes).route_all(&wires);
+    for r in &routes {
+        assert!(r.routed, "{:?}", r.points);
+        assert_orthogonal(r);
+        assert_clear(r, &nodes);
+    }
+    let mut climbs: Vec<f32> = routes.iter().map(|r| r.points[1].x).collect();
+    climbs.sort_by(f32::total_cmp);
+    climbs.dedup();
+    assert_eq!(climbs.len(), 3, "spread apart: {climbs:?}");
+}
+
 #[test]
 fn a_coordinate_that_is_not_finite_falls_back_to_a_segment() {
     let wire = Connector::new(right(f32::NAN, 0.0), left(10.0, 0.0));

@@ -46,6 +46,11 @@ impl Connector {
     pub fn new(from: Port, to: Port) -> Connector {
         Connector { from, to }
     }
+
+    /// Whether both ports have finite coordinates.
+    fn is_finite(&self) -> bool {
+        self.from.at.is_finite() && self.to.at.is_finite()
+    }
 }
 
 /// How routes are drawn. The distances are in the caller's units.
@@ -168,21 +173,58 @@ impl Router {
     /// routing one. Then wires sharing a channel are spread
     /// [`spacing`](Options::spacing) apart: their segments on one line
     /// move across it, the segments at the ports excepted.
+    ///
+    /// A connector with no route at the [`margin`](Options::margin) is
+    /// tried again with half of it, up to three times, so a port between
+    /// boxes closer than twice the margin still gets a route, running
+    /// closer to them. Only then does it get the fallback.
     pub fn route_all(&mut self, connectors: &[Connector]) -> Vec<Route> {
         let margin = self.options.margin.max(0.0);
         let bend = self.options.bend_penalty.max(0.0);
-        let grown: Vec<Rect> = self.obstacles.iter().map(|o| o.expand(margin)).collect();
-        let stubs: Vec<Point> = connectors
-            .iter()
-            .flat_map(|c| [stub(&c.from, margin), stub(&c.to, margin)])
-            .filter(|p| p.is_finite())
+        let mut routes = vec![Route::default(); connectors.len()];
+        // The margin each route was found with, for nudging it.
+        let mut margins = vec![margin; connectors.len()];
+        let mut pending: Vec<usize> = (0..connectors.len())
+            .filter(|&i| connectors[i].is_finite())
             .collect();
-        let grid = Grid::build(&grown, &stubs);
-        let mut routes: Vec<Route> = connectors
-            .iter()
-            .map(|c| route_in(&grid, &mut self.search, c, margin, bend))
-            .collect();
-        nudge::nudge(&mut routes, self.options.spacing, margin);
+        let mut tried = margin;
+        for _ in 0..=MARGIN_HALVINGS {
+            if pending.is_empty() {
+                break;
+            }
+            let grown: Vec<Rect> = self.obstacles.iter().map(|o| o.expand(tried)).collect();
+            let stubs: Vec<Point> = pending
+                .iter()
+                .flat_map(|&i| {
+                    [
+                        stub(&connectors[i].from, tried),
+                        stub(&connectors[i].to, tried),
+                    ]
+                })
+                .filter(|p| p.is_finite())
+                .collect();
+            let grid = Grid::build(&grown, &stubs);
+            pending.retain(|&i| {
+                match route_in(&grid, &mut self.search, &connectors[i], tried, bend) {
+                    Some(route) => {
+                        routes[i] = route;
+                        margins[i] = tried;
+                        false
+                    }
+                    None => true,
+                }
+            });
+            if tried == 0.0 {
+                break;
+            }
+            tried /= 2.0;
+        }
+        for (route, c) in routes.iter_mut().zip(connectors) {
+            if route.points.is_empty() {
+                *route = fallback_route(c, margin);
+            }
+        }
+        nudge::nudge(&mut routes, self.options.spacing, &margins);
         routes
     }
 
@@ -218,33 +260,49 @@ fn stub(port: &Port, margin: f32) -> Point {
     port.at.toward(port.side, margin)
 }
 
-/// One connector over the grid, or its fallback.
-fn route_in(grid: &Grid, search: &mut Search, c: &Connector, margin: f32, bend: f32) -> Route {
-    let (a, b) = (c.from.at, c.to.at);
-    if !a.is_finite() || !b.is_finite() {
-        return Route {
-            points: vec![a, b],
-            routed: false,
-        };
-    }
+/// How many times a connector with no route is tried again with half
+/// the margin: down to an eighth of it.
+const MARGIN_HALVINGS: u32 = 3;
+
+/// One connector over the grid, if it has a route there.
+fn route_in(
+    grid: &Grid,
+    search: &mut Search,
+    c: &Connector,
+    margin: f32,
+    bend: f32,
+) -> Option<Route> {
     let (sa, sb) = (stub(&c.from, margin), stub(&c.to, margin));
-    let path = grid.vertex(sa).zip(grid.vertex(sb)).and_then(|(va, vb)| {
-        // The route arrives going into the second port's node.
-        search.find(grid, va, c.from.side, vb, c.to.side.opposite(), bend)
-    });
-    match path {
-        Some(path) => Route {
-            points: simplify(
-                std::iter::once(a)
-                    .chain(path.into_iter().map(|v| grid.point(v)))
-                    .chain(std::iter::once(b)),
-            ),
-            routed: true,
-        },
-        None => Route {
-            points: simplify(fallback(a, sa, c.from.side, sb, b)),
-            routed: false,
-        },
+    let (va, vb) = grid.vertex(sa).zip(grid.vertex(sb))?;
+    // The route arrives going into the second port's node.
+    let path = search.find(grid, va, c.from.side, vb, c.to.side.opposite(), bend)?;
+    Some(Route {
+        points: simplify(
+            std::iter::once(c.from.at)
+                .chain(path.into_iter().map(|v| grid.point(v)))
+                .chain(std::iter::once(c.to.at)),
+        ),
+        routed: true,
+    })
+}
+
+/// What a connector with no route is drawn as.
+fn fallback_route(c: &Connector, margin: f32) -> Route {
+    let (a, b) = (c.from.at, c.to.at);
+    let points = if c.is_finite() {
+        simplify(fallback(
+            a,
+            stub(&c.from, margin),
+            c.from.side,
+            stub(&c.to, margin),
+            b,
+        ))
+    } else {
+        vec![a, b]
+    };
+    Route {
+        points,
+        routed: false,
     }
 }
 
