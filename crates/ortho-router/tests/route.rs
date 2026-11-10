@@ -278,6 +278,49 @@ fn wires_sharing_a_channel_are_spread_apart() {
     }
 }
 
+#[test]
+fn routes_found_one_by_one_are_nudged_like_a_batch() {
+    let (nodes, wires) = rows_and_columns();
+    let mut r = router(&nodes);
+    let mut routes: Vec<Route> = wires.iter().map(|w| r.route(w)).collect();
+    r.nudge(&mut routes);
+    assert_eq!(routes, r.route_all(&wires));
+}
+
+#[test]
+fn routes_found_with_different_obstacles_are_nudged_together() {
+    // Each wire sees only the nodes in its own way, so they cannot share
+    // one batch, yet they climb the same channel.
+    let (nodes, wires) = rows_and_columns();
+    let mut routes: Vec<Route> = wires
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let mine = nodes.iter().copied().skip(i % 2);
+            Router::new(Options::default())
+                .with_obstacles(mine)
+                .route(w)
+        })
+        .collect();
+    router(&nodes).nudge(&mut routes);
+    for (i, ri) in routes.iter().enumerate() {
+        for rj in &routes[i + 1..] {
+            for a in inner_segments(ri) {
+                for b in inner_segments(rj) {
+                    assert!(!overlap(a, b), "{a:?} on top of {b:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_route_records_the_margin_it_was_found_with() {
+    let wire = |gap: f32| Connector::new(right(100.0, 30.0), left(3.0 * (100.0 + gap), 30.0));
+    assert_eq!(router(&row(60.0)).route(&wire(60.0)).margin, 12.0);
+    assert!(router(&row(6.0)).route(&wire(6.0)).margin < 6.0);
+}
+
 /// A route's segments that may move: not those at its ports.
 fn inner_segments(r: &Route) -> Vec<(Point, Point)> {
     let n = r.points.len();

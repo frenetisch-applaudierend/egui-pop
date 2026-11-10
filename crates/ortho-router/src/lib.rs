@@ -62,7 +62,7 @@ pub struct Options {
     /// What a bend costs, as a length (default 40): the higher, the
     /// fewer bends at the price of longer routes.
     pub bend_penalty: f32,
-    /// How far apart [`Router::route_all`] spreads wires that share a
+    /// How far apart [`Router::nudge`] spreads wires that share a
     /// channel (default 6; 0 leaves them on top of each other). A group
     /// spreads over the margin at most, so with many wires in one
     /// channel they come closer than this.
@@ -91,6 +91,11 @@ pub struct Route {
     /// a coordinate that is not finite falls back to the straight
     /// segment between its ports.
     pub routed: bool,
+    /// The margin it keeps from the obstacles: the
+    /// [`margin`](Options::margin), or a fraction of it when the route
+    /// had to pass between obstacles closer than twice the margin.
+    /// [`Router::nudge`] moves it by half of this at most.
+    pub margin: f32,
 }
 
 impl Route {
@@ -182,8 +187,6 @@ impl Router {
         let margin = self.options.margin.max(0.0);
         let bend = self.options.bend_penalty.max(0.0);
         let mut routes = vec![Route::default(); connectors.len()];
-        // The margin each route was found with, for nudging it.
-        let mut margins = vec![margin; connectors.len()];
         let mut pending: Vec<usize> = (0..connectors.len())
             .filter(|&i| connectors[i].is_finite())
             .collect();
@@ -208,7 +211,6 @@ impl Router {
                 match route_in(&grid, &mut self.search, &connectors[i], tried, bend) {
                     Some(route) => {
                         routes[i] = route;
-                        margins[i] = tried;
                         false
                     }
                     None => true,
@@ -224,8 +226,23 @@ impl Router {
                 *route = fallback_route(c, margin);
             }
         }
-        nudge::nudge(&mut routes, self.options.spacing, &margins);
+        self.nudge(&mut routes);
         routes
+    }
+
+    /// Spreads wires that share a channel [`spacing`](Options::spacing)
+    /// apart: segments of different routes that lie on one line and
+    /// overlap move across it, the segments at the ports excepted.
+    /// [`route_all`](Router::route_all) does this already.
+    ///
+    /// On its own, it nudges routes found in separate calls, for
+    /// example routes found with different obstacles each. A group of
+    /// segments spreads over the smallest [`margin`](Route::margin) of
+    /// its routes, so a nudged segment keeps at least half of it from
+    /// the obstacles its route was found with. Routes that were not
+    /// [`routed`](Route::routed) stay as they are.
+    pub fn nudge(&self, routes: &mut [Route]) {
+        nudge::nudge(routes, self.options.spacing);
     }
 
     /// A hash of the obstacles, the options and `connectors`: the same
@@ -277,6 +294,7 @@ fn route_in(
     // The route arrives going into the second port's node.
     let path = search.find(grid, va, c.from.side, vb, c.to.side.opposite(), bend)?;
     Some(Route {
+        margin,
         points: simplify(
             std::iter::once(c.from.at)
                 .chain(path.into_iter().map(|v| grid.point(v)))
@@ -303,6 +321,7 @@ fn fallback_route(c: &Connector, margin: f32) -> Route {
     Route {
         points,
         routed: false,
+        margin,
     }
 }
 

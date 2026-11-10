@@ -93,6 +93,8 @@ line that overlap are spread `Options::spacing` apart across it,
 centred on the line and within the margin, ordered so the spreading
 adds as few crossings as it can. A segment moves as a whole, so the
 route stays orthogonal; the segments at the ports stay where they are.
+`Router::nudge` is the same step on its own, for routes found in
+separate calls, for example with different obstacles for each.
 
 Nodes closer than twice the margin leave no room between them: a port's
 stub would end inside the next node's margin. A connector with no route
