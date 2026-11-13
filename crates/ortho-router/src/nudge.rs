@@ -10,6 +10,19 @@
 //! margin (half of it on each side of the line), so a nudged segment
 //! keeps at least half the margin away from the obstacles.
 //!
+//! A route's first and last segments are its stubs, the margin long
+//! where the route turns right out of its port: the line a stub ends
+//! on is the channel beside its node, where wires gather. Centred on
+//! that line, half of a group would move toward the node and shorten
+//! the stubs that end on it, to half the margin at worst. So a group
+//! holding a segment next to a port moves away from that port as a
+//! whole, until the stub is as long as it was found, or the margin if
+//! it was longer. It still stays within half the margin of its line:
+//! on the half that is left, its segments come closer than `spacing`
+//! where they must, down to half of what they would have. Where even
+//! that does not do, with stubs on both sides of the line, the stubs
+//! share what is missing.
+//!
 //! Within a group, segments are ordered so the spreading adds as few
 //! crossings as it can. Take vertical segments, ordered left to right:
 //! each has a top end and a bottom end, where it turns left or right.
@@ -94,9 +107,71 @@ pub(crate) fn nudge(routes: &mut [Route], spacing: f32) {
             .iter()
             .map(|s| routes[s.route].margin)
             .fold(f32::INFINITY, f32::min);
-        let step = spacing.min(margin.max(0.0) / (n - 1.0));
+        let margin = margin.max(0.0);
+        // A segment's place in the group, in steps from its middle.
+        let place = |m: usize| m as f32 - (n - 1.0) / 2.0;
+        // The stubs that end on the group's segments: the place of the
+        // segment, and how far it may move toward its port (negative
+        // for a port at a smaller coordinate).
+        let mut pins: Vec<(f32, f32, bool)> = Vec::new();
         for (m, s) in group.iter().enumerate() {
-            let off = (m as f32 - (n - 1.0) / 2.0) * step;
+            let route = &routes[s.route];
+            let p = &route.points;
+            let ports = [
+                (s.k == 1).then_some(0),
+                (s.k + 3 == p.len()).then_some(p.len() - 1),
+            ];
+            for port in ports.into_iter().flatten() {
+                let port = if s.horizontal { p[port].y } else { p[port].x };
+                let stub = s.at - port;
+                let keep = stub.abs().min(route.margin);
+                pins.push((place(m), keep.copysign(stub) - stub, stub > 0.0));
+            }
+        }
+        // How far the group may move as a whole with this step: for the
+        // stubs, and to stay within half the margin of its line.
+        let stubs = |step: f32| {
+            let (mut least, mut most) = (f32::NEG_INFINITY, f32::INFINITY);
+            for &(place, room, port_before) in &pins {
+                if port_before {
+                    least = least.max(room - place * step);
+                } else {
+                    most = most.min(room - place * step);
+                }
+            }
+            (least, most)
+        };
+        let reach = |step: f32| (margin - (n - 1.0) * step).max(0.0) / 2.0;
+        let fits = |step: f32| {
+            let (least, most) = stubs(step);
+            least.max(-reach(step)) <= most.min(reach(step))
+        };
+        let full = spacing.min(margin / (n - 1.0));
+        let tight = full / 2.0;
+        let step = if fits(full) || !fits(tight) {
+            full.min(if fits(full) { full } else { tight })
+        } else {
+            // The widest step that fits: what fits is an interval.
+            let (mut fitting, mut wide) = (tight, full);
+            for _ in 0..16 {
+                let mid = (fitting + wide) / 2.0;
+                if fits(mid) {
+                    fitting = mid;
+                } else {
+                    wide = mid;
+                }
+            }
+            fitting
+        };
+        let (least, most) = stubs(step);
+        let moved = if least <= most {
+            0f32.clamp(least, most)
+        } else {
+            (least + most) / 2.0
+        };
+        let moved = moved.clamp(-reach(step), reach(step));
+        for (m, s) in group.iter().enumerate() {
+            let off = place(m) * step + moved;
             if off != 0.0 {
                 shifts.push((s.route, s.k, s.horizontal, off));
             }
@@ -206,6 +281,53 @@ mod tests {
             .iter()
             .fold((f32::MAX, f32::MIN), |(l, h), &x| (l.min(x), h.max(x)));
         assert!(hi - lo <= 8.0 + 1e-4, "{xs:?}");
+    }
+
+    #[test]
+    fn a_group_beside_a_port_spreads_away_from_it() {
+        // Both end in the top of a node at y = 112, down stubs from the
+        // channel at y = 100.
+        let mut routes = vec![
+            route(&[[0.0, 0.0], [0.0, 100.0], [200.0, 100.0], [200.0, 112.0]]),
+            route(&[[20.0, 0.0], [20.0, 100.0], [212.0, 100.0], [212.0, 112.0]]),
+        ];
+        nudge(&mut routes, 6.0);
+        let ys = [routes[0].points[1].y, routes[1].points[1].y];
+        assert_eq!((ys[0] - ys[1]).abs(), 6.0, "still spread: {ys:?}");
+        for r in &routes {
+            let n = r.points.len();
+            let stub = r.points[n - 1].y - r.points[n - 2].y;
+            assert!(stub >= 12.0, "a stub of {stub}");
+        }
+    }
+
+    #[test]
+    fn a_short_stub_keeps_its_length() {
+        // The first ends 4 below the channel, closer than its margin.
+        let mut routes = vec![
+            route(&[[0.0, 0.0], [0.0, 100.0], [200.0, 100.0], [200.0, 104.0]]),
+            route(&[[20.0, 0.0], [20.0, 100.0], [212.0, 100.0], [212.0, 130.0]]),
+        ];
+        nudge(&mut routes, 6.0);
+        let stub = |r: &Route| r.points[3].y - r.points[2].y;
+        assert!(stub(&routes[0]) >= 4.0, "{}", stub(&routes[0]));
+        assert!(stub(&routes[1]) >= 12.0, "{}", stub(&routes[1]));
+        assert_ne!(routes[0].points[1].y, routes[1].points[1].y);
+    }
+
+    #[test]
+    fn stubs_on_both_sides_share_what_is_missing() {
+        // One ends below the channel at y = 100, the other starts above
+        // it, each with a stub of exactly the margin.
+        let mut routes = vec![
+            route(&[[0.0, 0.0], [0.0, 100.0], [200.0, 100.0], [200.0, 112.0]]),
+            route(&[[50.0, 88.0], [50.0, 100.0], [300.0, 100.0], [300.0, 200.0]]),
+        ];
+        nudge(&mut routes, 6.0);
+        let below = routes[0].points[3].y - routes[0].points[2].y;
+        let above = routes[1].points[1].y - routes[1].points[0].y;
+        assert_eq!(below, above, "the same length on both sides");
+        assert_ne!(routes[0].points[1].y, routes[1].points[1].y);
     }
 
     #[test]

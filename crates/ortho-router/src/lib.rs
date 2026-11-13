@@ -239,8 +239,13 @@ impl Router {
     /// example routes found with different obstacles each. A group of
     /// segments spreads over the smallest [`margin`](Route::margin) of
     /// its routes, so a nudged segment keeps at least half of it from
-    /// the obstacles its route was found with. Routes that were not
-    /// [`routed`](Route::routed) stay as they are.
+    /// the obstacles its route was found with. A group with a segment
+    /// that meets a route's first or last segment moves away from that
+    /// port as a whole, so the segment into the port keeps its length
+    /// (up to the margin). It still stays within half the margin of
+    /// its line, so its segments come closer than the spacing where
+    /// they must. Routes that were not [`routed`](Route::routed) stay
+    /// as they are.
     pub fn nudge(&self, routes: &mut [Route]) {
         nudge::nudge(routes, self.options.spacing);
     }
